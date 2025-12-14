@@ -20,7 +20,7 @@ with open('config.yaml', "r") as f:
     run_configuration = yaml.safe_load(f)
 env_config = run_configuration.get('env')
         
-def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error, total_cost):
+def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error):
     if not os.path.exists(gpt_path):
         os.makedirs(gpt_path)
     curr_rates = obs['p']['PeriodicBracketTax-curr_rates']
@@ -98,11 +98,9 @@ def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error, t
         else:
             return (actions[0] >= 0) & (actions[0] <= 1) & (actions[1] >= 0) & (actions[1] <= 1)
     if env.world.timestep%3 == 0 and env.world.timestep > 0:
-        results, cost = get_multiple_completion([list(dialogs)[:2] + list(dialog4ref)[-3:-1] + list(dialogs)[-1:] for dialogs, dialog4ref in zip(dialog_queue, dialog4ref_queue)])
-        total_cost += cost
+        results = get_multiple_completion([list(dialogs)[:2] + list(dialog4ref)[-3:-1] + list(dialogs)[-1:] for dialogs, dialog4ref in zip(dialog_queue, dialog4ref_queue)])
     else:
-        results, cost = get_multiple_completion([list(dialogs) for dialogs in dialog_queue])
-        total_cost += cost
+        results = get_multiple_completion([list(dialogs) for dialogs in dialog_queue])
     actions = {}
     for idx in range(env.num_agents):
         content = results[idx]
@@ -132,8 +130,7 @@ def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error, t
         for idx in range(env.num_agents):
             # dialog_queue[idx].append({'role': 'user', 'content': reflection_prompt})
             dialog4ref_queue[idx].append({'role': 'user', 'content': reflection_prompt})
-        results, cost = get_multiple_completion([list(dialogs) for dialogs in dialog4ref_queue], temperature=0, max_tokens=200)
-        total_cost += cost
+        results = get_multiple_completion([list(dialogs) for dialogs in dialog4ref_queue], temperature=0, max_tokens=200)
         for idx in range(env.num_agents):
             content = results[idx]
             # dialog_queue[idx].append({'role': 'assistant', 'content': content})
@@ -143,7 +140,7 @@ def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error, t
              with open(f'''{gpt_path}/{env.get_agent(str(idx)).endogenous['name']}''', 'a') as f:
                 for dialog in list(agent_dialog)[-2:]:
                     f.write(f'''>>>>>>>>>{dialog['role']}: {dialog['content']}\n''')
-    return actions, gpt_error, total_cost
+    return actions, gpt_error
 
 def complex_actions(env, obs, beta=0.1, gamma=0.1, h=1):
 
@@ -192,7 +189,6 @@ def main(policy_model='gpt', num_agents=100, episode_length=240, dialog_len=3, b
     env_config['n_agents'] = num_agents
     env_config['episode_length'] = episode_length
     if policy_model == 'gpt':
-        total_cost = 0
         env_config['flatten_masks'] = False
         env_config['flatten_observations'] = False
         env_config['components'][0]['SimpleLabor']['scale_obs'] = False
@@ -205,7 +201,6 @@ def main(policy_model='gpt', num_agents=100, episode_length=240, dialog_len=3, b
         from collections import deque
         dialog_queue = [deque(maxlen=dialog_len) for _ in range(env_config['n_agents'])]
         dialog4ref_queue = [deque(maxlen=7) for _ in range(env_config['n_agents'])]
-
     elif policy_model == 'complex':
         env_config['components'][2]['SimpleConsumption']['max_price_inflation'] = max_price_inflation
         env_config['components'][2]['SimpleConsumption']['max_wage_inflation'] = max_wage_inflation
@@ -225,14 +220,14 @@ def main(policy_model='gpt', num_agents=100, episode_length=240, dialog_len=3, b
         os.makedirs(f'{save_path}figs/{policy_model_save}')
     for epi in range(env.episode_length):
         if policy_model == 'gpt':
-            actions, gpt_error, total_cost = gpt_actions(env, obs, dialog_queue, dialog4ref_queue, f'{save_path}data/{policy_model_save}/dialogs', gpt_error, total_cost)
+            actions, gpt_error = gpt_actions(env, obs, dialog_queue, dialog4ref_queue, f'{save_path}data/{policy_model_save}/dialogs', gpt_error)
         elif policy_model == 'complex':
             actions = complex_actions(env, obs, beta=beta, gamma=gamma, h=h)
         obs, rew, done, info = env.step(actions)
         if (epi+1) % 3 == 0:
-            print(f'step {epi+1} done, cost {time()-t:.1f}s')
+            print(f'step {epi+1} done, elapsed {time()-t:.1f}s')
             if policy_model == 'gpt':
-                print(f'#errors: {gpt_error}, cost ${total_cost:.1f} so far')
+                print(f'#errors: {gpt_error}')
             t = time()
         if (epi+1) % 6 == 0 or epi+1 == env.episode_length:
             with open(f'{save_path}data/{policy_model_save}/actions_{epi+1}.pkl', 'wb') as f:
