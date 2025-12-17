@@ -105,7 +105,14 @@ def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error):
     for idx in range(env.num_agents):
         content = results[idx]
         try:
-            extracted_actions = list(eval(content).values())
+            json_blob = extract_json_object(content, index=-1)
+            if json_blob:
+                try:
+                    extracted_actions = list(json.loads(json_blob).values())
+                except Exception:
+                    extracted_actions = list(eval(json_blob).values())
+            else:
+                extracted_actions = list(eval(content).values())
             if not action_check(extracted_actions):
                 extracted_actions = [1, 0.5]
                 gpt_error += 1

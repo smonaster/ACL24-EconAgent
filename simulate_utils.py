@@ -76,6 +76,30 @@ def _call_llm(payload):
     response.raise_for_status()
     return _extract_response(response.json())
 
+def extract_json_object(text: str, index: int = -1):
+    """
+    Return the nth JSON-like object substring in the text (default last, index=-1).
+    If the index is out of bounds but objects exist, returns the last one; else None.
+    """
+    objects = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(text[start:i + 1])
+                start = None
+    if not objects:
+        return None
+    idx = index if index >= 0 else len(objects) + index
+    chosen = objects[-1] if idx < 0 or idx >= len(objects) else objects[idx]
+    # Normalize whitespace (newlines, tabs) inside the JSON snippet
+    return re.sub(r"\s+", " ", chosen).strip()
 
 def get_multiple_completion(dialogs, num_cpus=1, temperature=0, max_tokens=None, format_mode="plain"):
     get_completion_partial = partial(
