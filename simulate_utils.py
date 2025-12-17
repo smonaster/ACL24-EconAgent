@@ -10,6 +10,7 @@ import multiprocessing
 import scipy
 import time as pytime
 import requests
+import json
 from functools import partial
 
 save_path = './'
@@ -30,56 +31,37 @@ def prettify_document(document: str) -> str:
     return cleaned
 
 
-def _format_dialog_history(dialogs, mode="plain"):
-    """
-    Format dialog history for the LLM payload.
-    mode="plain": ROLE: content per line (legacy/default).
-    mode="chat_tags": tag roles to mimic chat-style prompts in a single string.
-    """
-    if mode == "chat_tags":
-        chunks = []
-        for message in dialogs:
-            role = message.get("role", "user").lower()
-            content = message.get("content", "")
-            if role == "system":
-                chunks.append(f"<|system|>\n{content}")
-            elif role == "assistant":
-                chunks.append(f"<|assistant|>\n{content}")
-            else:
-                chunks.append(f"<|user|>\n{content}")
-        return "\n".join(chunks) + "\n<|assistant|>\n"
-
-    # Default legacy format
-    turns = []
-    for message in dialogs:
-        role = message.get('role', 'user').upper()
-        content = message.get('content', '')
-        turns.append(f"{role}: {content}")
-    return "\n".join(turns)
-
-
 def _extract_response(data):
-    for key in ('respuesta', 'response', 'content', 'message'):
-        if key in data and isinstance(data[key], str):
-            text = data[key].replace('[INST]', '').replace('[/INST]', '').strip()
-            return text
-    raise ValueError("LLM endpoint response missing text content")
+    
+    if isinstance(data, dict):
+        if 'response' in data:
+            return data['response']
+        if 'content' in data: 
+            return data['content']
+            
+    raise ValueError(f"Formato de respuesta LLM desconocido o inválido: {data}")
 
 
 def _call_llm(payload):
-    response = requests.post(
-        LLM_ENDPOINT,
-        json=payload,
-        headers={"Content-Type": "application/json"},
-        timeout=LLM_TIMEOUT,
-    )
-    response.raise_for_status()
-    return _extract_response(response.json())
+    print(f"[LLM REQUEST] Messages: {len(payload.get('messages', []))} length")
 
-def extract_json_object(text: str, index: int = -1):
+    try:
+        response = requests.post(
+            LLM_ENDPOINT,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=LLM_TIMEOUT,
+        )
+        response.raise_for_status()
+        response_json = response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"[LLM ERROR] Connection failed: {e}")
+        raise e
+    return _extract_response(response_json)
+
+def extract_json_object(text: str, index: int = 0):
     """
-    Return the nth JSON-like object substring in the text (default last, index=-1).
-    If the index is out of bounds but objects exist, returns the last one; else None.
+    Return the nth JSON-like object substring in the text (default last).
     """
     objects = []
     depth = 0
@@ -98,37 +80,35 @@ def extract_json_object(text: str, index: int = -1):
         return None
     idx = index if index >= 0 else len(objects) + index
     chosen = objects[-1] if idx < 0 or idx >= len(objects) else objects[idx]
-    # Normalize whitespace (newlines, tabs) inside the JSON snippet
     return re.sub(r"\s+", " ", chosen).strip()
 
-def get_multiple_completion(dialogs, num_cpus=1, temperature=0, max_tokens=None, format_mode="plain"):
+def get_multiple_completion(dialogs_batch, num_cpus=1, temperature=0, max_tokens=None):
     get_completion_partial = partial(
         get_completion,
         temperature=temperature,
-        max_tokens=max_tokens,
-        format_mode=format_mode,
+        max_tokens=max_tokens
     )
     with multiprocessing.Pool(processes=num_cpus) as pool:
-        results = pool.map(get_completion_partial, dialogs)
+        results = pool.map(get_completion_partial, dialogs_batch)
     return results
 
-
-def get_completion(dialogs, temperature=0, max_tokens=None, format_mode="plain"):
+def get_completion(dialog_history, temperature=0, max_tokens=None, format_mode=None):
     payload = {
-        "message": _format_dialog_history(dialogs, mode=format_mode),
+        "messages": dialog_history,
         "max_tokens": max_tokens if max_tokens is not None else LLM_MAX_TOKENS,
         "temperature": temperature,
     }
+
     max_retries = 20
     for i in range(max_retries):
         try:
             return _call_llm(payload)
         except Exception as e:
             if i < max_retries - 1:
-                pytime.sleep(6)
+                pytime.sleep(2 * (i + 1))
             else:
-                print(f"An error of type {type(e).__name__} occurred: {e}")
-                return "Error"
+                print(f"FAILED after {max_retries} retries. Error: {e}")
+                return "{}"
 
 def format_numbers(numbers):
     return '[' + ', '.join('{:.2f}'.format(num) for num in numbers) + ']'
