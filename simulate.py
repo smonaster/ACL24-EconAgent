@@ -5,6 +5,7 @@ import os
 import sys
 
 import ai_economist.foundation as foundation
+import dirtyjson as dj
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
@@ -105,14 +106,17 @@ def gpt_actions(env, obs, dialog_queue, dialog4ref_queue, gpt_path, gpt_error):
     for idx in range(env.num_agents):
         content = results[idx]
         try:
-            json_blob = extract_json_object(content, index=-1)
-            if json_blob:
+            parsed_actions = extract_json_object(content, index=-1, parse=True)
+            if parsed_actions is None:
                 try:
-                    extracted_actions = list(json.loads(json_blob).values())
-                except Exception:
-                    extracted_actions = list(eval(json_blob).values())
+                    parsed_actions = dj.loads(content)
+                except dj.error.Error:
+                    parsed_actions = None
+            if isinstance(parsed_actions, dict):
+                extracted_actions = list(parsed_actions.values())
             else:
-                extracted_actions = list(eval(content).values())
+                extracted_actions = [1, 0.5]
+                gpt_error += 1
             if not action_check(extracted_actions):
                 extracted_actions = [1, 0.5]
                 gpt_error += 1

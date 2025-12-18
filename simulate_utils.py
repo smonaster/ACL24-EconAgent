@@ -6,12 +6,13 @@ import pandas as pd
 import seaborn as sns
 import re
 import os
-import multiprocessing
 import scipy
 import time as pytime
 import requests
 import json
+import dirtyjson as dj
 from functools import partial
+from concurrent.futures import ThreadPoolExecutor
 
 save_path = './'
 
@@ -23,7 +24,7 @@ world_start_time = datetime.strptime('2001.01', '%Y.%m')
 
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:8000/predict")
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "60"))
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "200"))
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
 
 def prettify_document(document: str) -> str:
     # Remove sequences of whitespace characters (including newlines)
@@ -44,6 +45,7 @@ def _extract_response(data):
 
 def _call_llm(payload):
     print(f"[LLM REQUEST] Messages: {len(payload.get('messages', []))} length")
+    print(f"[LLM REQUEST BODY] {payload}")
 
     try:
         response = requests.post(
@@ -54,14 +56,16 @@ def _call_llm(payload):
         )
         response.raise_for_status()
         response_json = response.json()
+        print(f"[LLM RAW RESPONSE] {response_json}")
     except requests.exceptions.RequestException as e:
         print(f"[LLM ERROR] Connection failed: {e}")
         raise e
     return _extract_response(response_json)
 
-def extract_json_object(text: str, index: int = 0):
+def extract_json_object(text: str, index: int = 0, parse: bool = False):
     """
     Return the nth JSON-like object substring in the text (default last).
+    If parse=True, attempt to parse that fragment with dirtyjson and return the object.
     """
     objects = []
     depth = 0
@@ -80,7 +84,13 @@ def extract_json_object(text: str, index: int = 0):
         return None
     idx = index if index >= 0 else len(objects) + index
     chosen = objects[-1] if idx < 0 or idx >= len(objects) else objects[idx]
-    return re.sub(r"\s+", " ", chosen).strip()
+    cleaned = re.sub(r"\s+", " ", chosen).strip()
+    if not parse:
+        return cleaned
+    try:
+        return dj.loads(cleaned)
+    except dj.error.Error:
+        return None
 
 def get_multiple_completion(dialogs_batch, num_cpus=1, temperature=0, max_tokens=None):
     get_completion_partial = partial(
@@ -88,9 +98,8 @@ def get_multiple_completion(dialogs_batch, num_cpus=1, temperature=0, max_tokens
         temperature=temperature,
         max_tokens=max_tokens
     )
-    with multiprocessing.Pool(processes=num_cpus) as pool:
-        results = pool.map(get_completion_partial, dialogs_batch)
-    return results
+    with ThreadPoolExecutor(max_workers=num_cpus) as executor:
+        return list(executor.map(get_completion_partial, dialogs_batch))
 
 def get_completion(dialog_history, temperature=0, max_tokens=None, format_mode=None):
     payload = {
